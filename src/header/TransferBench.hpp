@@ -2518,7 +2518,8 @@ static bool IsConfiguredGid(union ibv_gid const& gid)
                                int const&                   gidTblLen,
                                int const&                   portNum,
                                std::pair<int, std::string>& gidInfo,
-                               bool                         verbose = false)
+                               bool                         verbose = false,
+                               int                          preferredGidIndexForTieBreak = -1)
   {
     if(gidInfo.first >= 0) return ERR_NONE; // honor user choice
     union ibv_gid gid;
@@ -2552,8 +2553,11 @@ static bool IsConfiguredGid(union ibv_gid const& gid)
       } else {
         currPriority = (gidCurrRoceVersion == 2) ? GidPriority::ROCEV2_LINK_LOCAL : GidPriority::ROCEV1_LINK_LOCAL;
       }
-      if(currPriority > highestPriority) {
+      if (currPriority > highestPriority) {
         highestPriority = currPriority;
+        gidIndex = i;
+      } else if (currPriority == highestPriority && preferredGidIndexForTieBreak >= 0 && i == preferredGidIndexForTieBreak) {
+        // Tie-break: some NICs (e.g. Pensando ionic) use a specific index for working RoCEv2; prefer it when ROCE_VERSION matches
         gidIndex = i;
       }
     }
@@ -3093,7 +3097,7 @@ static bool IsConfiguredGid(union ibv_gid const& gid)
       if (srcIsRoCE) {
         // Try to auto-detect the GID index
         std::pair<int, std::string> srcGidInfo (srcGidIndex, "");
-        ERR_CHECK(GetGidIndex(rss.srcContext, rss.srcPortAttr.gid_tbl_len, port, srcGidInfo, System::Get().IsVerbose()));
+        ERR_CHECK(GetGidIndex(rss.srcContext, rss.srcPortAttr.gid_tbl_len, port, srcGidInfo, System::Get().IsVerbose(), cfg.nic.roceVersion));
         srcGidIndex = srcGidInfo.first;
         IBV_CALL(ibv_query_gid, rss.srcContext, port, srcGidIndex, &rss.srcGid);
       }
@@ -3157,7 +3161,7 @@ static bool IsConfiguredGid(union ibv_gid const& gid)
       if (dstIsRoCE) {
         // Try to auto-detect the GID index
         std::pair<int, std::string> dstGidInfo (dstGidIndex, "");
-        ERR_CHECK(GetGidIndex(rss.dstContext, rss.dstPortAttr.gid_tbl_len, port, dstGidInfo));
+        ERR_CHECK(GetGidIndex(rss.dstContext, rss.dstPortAttr.gid_tbl_len, port, dstGidInfo, false, cfg.nic.roceVersion));
         dstGidIndex = dstGidInfo.first;
         IBV_CALL(ibv_query_gid, rss.dstContext, port, dstGidIndex, &rss.dstGid);
       }
