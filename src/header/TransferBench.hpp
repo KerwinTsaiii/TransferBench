@@ -2455,6 +2455,7 @@ static bool IsConfiguredGid(union ibv_gid const& gid)
                                         int const&  gidIndex,
                                         int&        version)
   {
+    version = 0;  // avoid use of uninitialized value when content does not match
     char const* deviceName = ibv_get_device_name(context->device);
     char gidRoceVerStr[16]      = {};
     char roceTypePath[PATH_MAX] = {};
@@ -2465,20 +2466,35 @@ static bool IsConfiguredGid(union ibv_gid const& gid)
     if (fd == -1)
       return {ERR_FATAL, "Failed while opening RoCE file path (%s)", roceTypePath};
 
-    int ret = read(fd, gidRoceVerStr, 15);
+    int ret = read(fd, gidRoceVerStr, (int)(sizeof(gidRoceVerStr) - 1));
     close(fd);
 
     if (ret == -1)
       return {ERR_FATAL, "Failed while reading RoCE version"};
 
+    gidRoceVerStr[ret >= 0 ? ret : 0] = '\0';
+    // Trim trailing whitespace/newline (some drivers add newline)
+    for (size_t len = strlen(gidRoceVerStr); len > 0; --len) {
+      char c = gidRoceVerStr[len - 1];
+      if (c == '\n' || c == '\r' || c == ' ') {
+        gidRoceVerStr[len - 1] = '\0';
+      } else {
+        break;
+      }
+    }
+
     if (strlen(gidRoceVerStr)) {
       if (strncmp(gidRoceVerStr, "IB/RoCE v1", strlen("IB/RoCE v1")) == 0
           || strncmp(gidRoceVerStr, "RoCE v1", strlen("RoCE v1")) == 0) {
         version = 1;
+        return ERR_NONE;
       }
-      else if (strncmp(gidRoceVerStr, "RoCE v2", strlen("RoCE v2")) == 0) {
+      if (strncmp(gidRoceVerStr, "RoCE v2", strlen("RoCE v2")) == 0
+          || strncmp(gidRoceVerStr, "RoCEv2", strlen("RoCEv2")) == 0) {
         version = 2;
+        return ERR_NONE;
       }
+      return {ERR_FATAL, "Unknown RoCE version string in %s", roceTypePath};
     }
     return ERR_NONE;
   }
@@ -2501,19 +2517,33 @@ static bool IsConfiguredGid(union ibv_gid const& gid)
   static ErrResult GetGidIndex(struct ibv_context*          context,
                                int const&                   gidTblLen,
                                int const&                   portNum,
-                               std::pair<int, std::string>& gidInfo)
+                               std::pair<int, std::string>& gidInfo,
+                               bool                         verbose = false)
   {
     if(gidInfo.first >= 0) return ERR_NONE; // honor user choice
     union ibv_gid gid;
 
     GidPriority highestPriority = GidPriority::UNKNOWN;
     int gidIndex = -1;
+    bool usedFallback = false;
 
     for (int i = 0; i < gidTblLen; ++i) {
       IBV_CALL(ibv_query_gid, context, portNum, i, &gid);
       if (!IsConfiguredGid(gid)) continue;
-      int gidCurrRoceVersion;
-      if(GetRoceVersionNumber(context, portNum, i, gidCurrRoceVersion).errType != ERR_NONE) continue;
+      int gidCurrRoceVersion = 0;
+      ErrResult roceVerRes = GetRoceVersionNumber(context, portNum, i, gidCurrRoceVersion);
+      if (roceVerRes.errType != ERR_NONE) {
+        // Fallback: IPv4-mapped IPv6 is only supported in RoCEv2; infer version when sysfs is missing (e.g. AMD Pensando)
+        if (IsIPv4MappedIPv6(gid)) {
+          gidCurrRoceVersion = 2;
+          usedFallback = true;
+          if (verbose) {
+            printf("[INFO] GID index %d: sysfs unavailable, inferred RoCEv2 from IPv4-mapped GID\n", i);
+          }
+        } else {
+          continue;
+        }
+      }
       GidPriority currPriority;
       if (IsIPv4MappedIPv6(gid)) {
         currPriority = (gidCurrRoceVersion == 2) ? GidPriority::ROCEV2_IPV4 : GidPriority::ROCEV1_IPV4;
@@ -2534,6 +2564,10 @@ static bool IsConfiguredGid(union ibv_gid const& gid)
     }
     gidInfo.first = gidIndex;
     gidInfo.second = GidPriorityStr[highestPriority];
+    if (verbose) {
+      printf("[INFO] Auto-selected GID index %d (%s)%s\n", gidIndex, GidPriorityStr[highestPriority],
+             usedFallback ? " (via fallback)" : "");
+    }
     return ERR_NONE;
   }
 
@@ -3057,7 +3091,7 @@ static bool IsConfiguredGid(union ibv_gid const& gid)
       if (srcIsRoCE) {
         // Try to auto-detect the GID index
         std::pair<int, std::string> srcGidInfo (srcGidIndex, "");
-        ERR_CHECK(GetGidIndex(rss.srcContext, rss.srcPortAttr.gid_tbl_len, port, srcGidInfo));
+        ERR_CHECK(GetGidIndex(rss.srcContext, rss.srcPortAttr.gid_tbl_len, port, srcGidInfo, System::Get().IsVerbose()));
         srcGidIndex = srcGidInfo.first;
         IBV_CALL(ibv_query_gid, rss.srcContext, port, srcGidIndex, &rss.srcGid);
       }
