@@ -2912,11 +2912,13 @@ static bool IsConfiguredGid(union ibv_gid const& gid)
   };
 
   // Transition QueuePair to Ready to Receive State
+  // For RoCE, localGidIndex is this port's GID index (sgid_index); connInfo.gid/gidIdx are the remote peer's.
   static ErrResult TransitionQpToRtr(ibv_qp*         qp,
                                      ConnInfo const& connInfo,
                                      uint8_t  const& port,
                                      bool     const& isRoCE,
-                                     ibv_mtu  const& mtu)
+                                     ibv_mtu  const& mtu,
+                                     int      const& localGidIndex = 0)
   {
     // Prepare QP attributes
     struct ibv_qp_attr attr = {};
@@ -2930,7 +2932,7 @@ static bool IsConfiguredGid(union ibv_gid const& gid)
       attr.ah_attr.grh.dgid.global.subnet_prefix = connInfo.gid.global.subnet_prefix;
       attr.ah_attr.grh.dgid.global.interface_id  = connInfo.gid.global.interface_id;
       attr.ah_attr.grh.flow_label                = 0;
-      attr.ah_attr.grh.sgid_index                = connInfo.gidIdx;
+      attr.ah_attr.grh.sgid_index                = localGidIndex;  // use local port's GID index, not remote's
       attr.ah_attr.grh.hop_limit                 = 255;
     } else {
       attr.ah_attr.is_global = 0;
@@ -3212,11 +3214,11 @@ static bool IsConfiguredGid(union ibv_gid const& gid)
       // Move queue pairs to ready-to-receive (RTR), using exchanged connection info
       // Then move them to read-to-send (RTS)
       if (GetRank() == srcMemRank) {
-        ERR_CHECK(TransitionQpToRtr(rss.srcQueuePairs[i], dstConnInfo, port, srcIsRoCE, rss.srcPortAttr.active_mtu));
+        ERR_CHECK(TransitionQpToRtr(rss.srcQueuePairs[i], dstConnInfo, port, srcIsRoCE, rss.srcPortAttr.active_mtu, srcGidIndex));
         ERR_CHECK(TransitionQpToRts(rss.srcQueuePairs[i]));
       }
       if (GetRank() == dstMemRank) {
-        ERR_CHECK(TransitionQpToRtr(rss.dstQueuePairs[i], srcConnInfo, port, dstIsRoCE, rss.dstPortAttr.active_mtu));
+        ERR_CHECK(TransitionQpToRtr(rss.dstQueuePairs[i], srcConnInfo, port, dstIsRoCE, rss.dstPortAttr.active_mtu, dstGidIndex));
         ERR_CHECK(TransitionQpToRts(rss.dstQueuePairs[i]));
       }
 
