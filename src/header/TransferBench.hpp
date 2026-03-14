@@ -2956,8 +2956,11 @@ static bool IsConfiguredGid(union ibv_gid const& gid)
                             IBV_QP_RQ_PSN             |
                             IBV_QP_MAX_DEST_RD_ATOMIC |
                             IBV_QP_MIN_RNR_TIMER);
-    if (ret != 0)
+    if (ret != 0) {
+      if (ret == 110)  // ETIMEDOUT
+        return {ERR_FATAL, "Error during QP RTR. IB Verbs Error code: %d (ETIMEDOUT). Try setting IB_GID_INDEX explicitly (e.g. IB_GID_INDEX=2), or run with VERBOSE=1 to see auto-selected GID", ret};
       return {ERR_FATAL, "Error during QP RTR. IB Verbs Error code: %d", ret};
+    }
 
     return ERR_NONE;
   }
@@ -3161,7 +3164,7 @@ static bool IsConfiguredGid(union ibv_gid const& gid)
       if (dstIsRoCE) {
         // Try to auto-detect the GID index
         std::pair<int, std::string> dstGidInfo (dstGidIndex, "");
-        ERR_CHECK(GetGidIndex(rss.dstContext, rss.dstPortAttr.gid_tbl_len, port, dstGidInfo, false, cfg.nic.roceVersion));
+        ERR_CHECK(GetGidIndex(rss.dstContext, rss.dstPortAttr.gid_tbl_len, port, dstGidInfo, System::Get().IsVerbose(), cfg.nic.roceVersion));
         dstGidIndex = dstGidInfo.first;
         IBV_CALL(ibv_query_gid, rss.dstContext, port, dstGidIndex, &rss.dstGid);
       }
@@ -5421,7 +5424,8 @@ static bool IsConfiguredGid(union ibv_gid const& gid)
   System::System() :
     rank(0), numRanks(1), commMode(COMM_NONE)
   {
-    verbose = getenv("TB_VERBOSE") ? atoi(getenv("TB_VERBOSE")) : 0;
+    verbose = (getenv("TB_VERBOSE") ? atoi(getenv("TB_VERBOSE")) : 0)
+           || (getenv("VERBOSE")    ? atoi(getenv("VERBOSE"))    : 0);
 
     if (getenv("TB_PAUSE")) {
       printf("Pausing for debug attachment\n");
